@@ -9,7 +9,7 @@ Code is not intended to be run as-is, but is provided as a reference for similar
 
 Datasets used:  
 [Common Voice](https://voice.mozilla.org/en/datasets)  
-[Google Bengali](http://www.openslr.org/53/)
+[Google Bengali](http://www.openslr.org/53/)  
 Audio Lingua - scraped using `audio_lingua_downloader.py` script in Code folder
 
 `dnn_models.py` and model code in `model_sincnet.py` taken from the [SincNet paper repository](https://github.com/mravanelli/SincNet/)  
