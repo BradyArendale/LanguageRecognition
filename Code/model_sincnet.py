@@ -8,20 +8,12 @@ from sklearn.metrics import accuracy_score, confusion_matrix
 from sklearn.model_selection import train_test_split
 import pandas as pd
 
-# Concatenate vectors from parts
+# Load training set
 X_train = torch.load('tensors/waveforms_train.pt')
-X_train.detach_()
 y_train = torch.load('tensors/labels_train.pt')
-# Subset training data
-# X_train, _, y_train, _ = train_test_split(X_train, y_train, stratify=y_train, train_size=0.2, random_state=9001)
-print("Train shape:", X_train.shape)
-# Concatenate vectors from parts
+# Load validation set
 X_valid = torch.load('tensors/waveforms_valid.pt')
-X_valid.detach_()
 y_valid = torch.load('tensors/labels_valid.pt')
-# Subset validation data
-# X_valid, _, y_valid, _ = train_test_split(X_valid, y_valid, stratify=y_valid, train_size=0.2, random_state=9001)
-print("Validation shape:", X_valid.shape)
 
 train_ds = TensorDataset(X_train, y_train)
 valid_ds = TensorDataset(X_valid, y_valid)
@@ -45,7 +37,7 @@ CNN_net = CNN(CNN_arch)
 
 DNN1_arch = {'input_dim': CNN_net.out_dim,
           'fc_lay': [2048,2048,2048],
-          'fc_drop': [0.0,0.0,0.0], 
+          'fc_drop': [0.2,0.2,0.2], 
           'fc_use_batchnorm': [True,True,True],
           'fc_use_laynorm': [False,False,False],
           'fc_use_laynorm_inp': True,
@@ -56,7 +48,7 @@ DNN1_net = MLP(DNN1_arch)
 
 DNN2_arch = {'input_dim': 2048,
           'fc_lay': [8],
-          'fc_drop': [0.0], 
+          'fc_drop': [0.2], 
           'fc_use_batchnorm': [False],
           'fc_use_laynorm': [False],
           'fc_use_laynorm_inp': False,
@@ -89,7 +81,7 @@ def train(model, epoch, data_loader):
         y = y.to(device)
         pred = model(x)
         loss = loss_func(pred, y) #the loss functions expects a batchSizex10 input
-        loss.backward(retain_graph=True)
+        loss.backward()
         opt.step()
         if batch_idx % log_interval == 999: #print training stats
             print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
@@ -138,27 +130,61 @@ for epoch in range(100):
     # Save training curves
     metrics_df = pd.concat([metrics_df, pd.DataFrame(metrics)]).reset_index(drop=True)
     metrics_df.to_csv('model_sincnet_metrics.csv')
-    # Early stopping (no validation accuracy improvement in last 10)
+    # Early stopping (no validation loss improvement in last 10)
     if epoch >= 10:
-        acc = metrics_df['validation_accuracy']
-        # Count number of validation accuracies less than current in last 10
-        es_criterion = sum(acc[epoch] > i for i in acc[epoch-10:epoch])
+        val_losses = metrics_df['validation_loss']
+        # Count number of validation losses less than 10 epochs ago
+        es_criterion = sum(val_losses[epoch-10] > i for i in val_losses[epoch-9:epoch+1])
         if es_criterion == 0:
-            print('Early stopping criterion by validation accuracy reached')
+            print('Early stopping criterion by validation loss reached')
             break
 
 # Save model
 torch.save(model.state_dict(), 'model_sincnet_weights.pt')
 
 # Test results
-X_test = torch.load('tensors/waveforms_test.pt')
-y_test = torch.load('tensors/labels_test.pt')
+# Load Common Voice/Bengali test data
+wav_test = torch.load('tensors/waveforms_test.pt')
+wav_test.detach_()
+labels_test = torch.load('tensors/labels_test.pt')
 
-model.eval()
-with torch.no_grad():
-    y_pred = model(X_test)
-    torch.save(y_pred, 'model_sincnet_predictions.pt')
-    # Get predicted class
-    y_pred = y_pred.argmax(dim=1)
-    print('Test accuracy:', accuracy_score(y_test, y_pred))
-    print('Confusion matrix:', confusion_matrix(y_test, y_pred))
+wav_ds = TensorDataset(wav_test, labels_test)
+wav_loader = DataLoader(wav_ds, batch_size=128, shuffle=False, 
+                          pin_memory=True, num_workers=10)
+
+# Load Audio Lingua test data
+wav_al = torch.load('tensors/audio_lingua_waveforms.pt')
+labels_al = torch.load('tensors/audio_lingua_labels.pt')
+
+al_wav_ds = TensorDataset(wav_al, labels_al)
+al_wav_loader = DataLoader(al_wav_ds, batch_size=128, shuffle=False, 
+                          pin_memory=True, num_workers=10)
+
+cpu = torch.device("cpu")
+# Find minimum validation loss and load weights
+best_epoch = metrics_df['validation_loss'].argmin()
+model.load_state_dict(
+    torch.load('checkpoints/sincnet/sincnet_checkpoint_'+str(best_epoch)+'.pt')
+    )
+
+# Define evaluation function
+def test_eval(model, data_loader, y_true, label):
+    print("\n\n******* Evaluate %s *******\n" % label)
+    model.eval()
+    y_pred = torch.tensor([])
+    for x, y in data_loader:
+        with torch.no_grad():
+            x = x.to(device)
+            y = y.to(device)
+            pred_prob = model(x)
+            y_pred = torch.cat([y_pred, pred_prob.to(cpu)])
+    print(''.join(["Test accuracy for ", label, ": ", 
+                   str(accuracy_score(y_true, y_pred.argmax(dim=1)))]))
+    print(''.join(["Test confusion matrix for ", label, ":\n", 
+                   str(confusion_matrix(y_true, y_pred.argmax(dim=1)))]))
+    torch.save(y_pred, 'preds/test_preds_'+label+'.pt')
+    torch.save(y_pred.argmax(dim=1), 'preds/test_preds_'+label+'_labels.pt')
+
+# Evaluate performance on test sets
+test_eval(model, wav_loader, labels_test, 'sincnet')
+test_eval(model, al_wav_loader, labels_al, 'sincnet_al')

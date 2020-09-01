@@ -7,14 +7,10 @@ import pandas as pd
 
 # Load training set
 X_train = torch.load('tensors/filterbanks_train.pt')
-X_train.detach_()
 y_train = torch.load('tensors/labels_train.pt')
-print("Train shape:", X_train.shape)
 # Load validation set
 X_valid = torch.load('tensors/filterbanks_valid.pt')
-X_valid.detach_()
 y_valid = torch.load('tensors/labels_valid.pt')
-print("Validation shape:", X_valid.shape)
 
 train_ds = TensorDataset(X_train, y_train)
 valid_ds = TensorDataset(X_valid, y_valid)
@@ -174,10 +170,10 @@ for epoch in range(100):
     train(model, epoch, train_loader)
     test(model, epoch, train_loader, 'train')
     test(model, epoch, val_loader, 'validation')
-    torch.save(model.state_dict(), 'checkpoints/xvec_model/xvec_model_checkpoint_'+str(epoch)+'.pt')
+    torch.save(model.state_dict(), 'checkpoints/etdnn/etdnn_checkpoint_'+str(epoch)+'.pt')
     # Save training curves
     metrics_df = pd.concat([metrics_df, pd.DataFrame(metrics)]).reset_index(drop=True)
-    metrics_df.to_csv('model_xvec_metrics.csv')
+    metrics_df.to_csv('model_etdnn_metrics.csv')
     # Early stopping (no validation accuracy improvement in last 10)
     if epoch >= 10:
         acc = metrics_df['validation_accuracy']
@@ -188,17 +184,51 @@ for epoch in range(100):
             break
 
 # Save model
-torch.save(model.state_dict(), 'model_xvec_weights.pt')
+torch.save(model.state_dict(), 'model_etdnn_weights.pt')
 
 # Test results
-X_test = torch.load('tensors/filterbanks_test.pt')
-y_test = torch.load('tensors/labels_test.pt')
+# Load Common Voice/Bengali test data
+wav_test = torch.load('tensors/filterbanks_test.pt')
+wav_test.detach_()
+labels_test = torch.load('tensors/labels_test.pt')
 
-model.eval()
-with torch.no_grad():
-    y_pred = model(X_test)
-    torch.save(y_pred, 'model_xvec_predictions.pt')
-    # Get predicted class
-    y_pred = y_pred.argmax(dim=1)
-    print('Test accuracy:', accuracy_score(y_test, y_pred))
-    print('Confusion matrix:', confusion_matrix(y_test, y_pred))
+wav_ds = TensorDataset(wav_test, labels_test)
+wav_loader = DataLoader(wav_ds, batch_size=128, shuffle=False, 
+                          pin_memory=True)
+
+# Load Audio Lingua test data
+wav_al = torch.load('tensors/audio_lingua_filterbanks.pt')
+labels_al = torch.load('tensors/audio_lingua_labels.pt')
+
+al_wav_ds = TensorDataset(wav_al, labels_al)
+al_wav_loader = DataLoader(al_wav_ds, batch_size=128, shuffle=False, 
+                          pin_memory=True)
+
+cpu = torch.device("cpu")
+# Find minimum validation loss and load weights
+best_epoch = metrics_df['validation_loss'].argmin()
+model.load_state_dict(
+    torch.load('checkpoints/etdnn/etdnn_checkpoint_'+str(best_epoch)+'.pt')
+    )
+
+# Define evaluation function
+def test_eval(model, data_loader, y_true, label):
+    print("\n\n******* Evaluate %s *******\n" % label)
+    model.eval()
+    y_pred = torch.tensor([])
+    for x, y in data_loader:
+        with torch.no_grad():
+            x = x.to(device)
+            y = y.to(device)
+            pred_prob = model(x)
+            y_pred = torch.cat([y_pred, pred_prob.to(cpu)])
+    print(''.join(["Test accuracy for ", label, ": ", 
+                   str(accuracy_score(y_true, y_pred.argmax(dim=1)))]))
+    print(''.join(["Test confusion matrix for ", label, ":\n", 
+                   str(confusion_matrix(y_true, y_pred.argmax(dim=1)))]))
+    torch.save(y_pred, 'preds/test_preds_'+label+'.pt')
+    torch.save(y_pred.argmax(dim=1), 'preds/test_preds_'+label+'_labels.pt')
+
+# Evaluate performance on test sets
+test_eval(model, wav_loader, labels_test, 'etdnn')
+test_eval(model, al_wav_loader, labels_al, 'etdnn_al')
